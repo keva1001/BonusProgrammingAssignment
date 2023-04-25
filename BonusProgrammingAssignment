@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h> // Include the time.h header for the rand() function
+#include <string.h>
+#include <time.h>
 
 #define CACHE_SIZE 32
 
@@ -8,6 +9,7 @@ typedef struct {
     int valid;
     int tag;
     int data;
+    int lru; // Used for LRU replacement policy
 } block;
 
 typedef struct {
@@ -18,28 +20,34 @@ typedef struct {
     int block_size;
     int num_sets;
     int num_blocks;
+    int associativity;
+    int replacement_policy;
     set* sets;
 } cache;
 
-void init_cache(cache* c, int block_size, int num_sets) {
+void init_cache(cache* c, int block_size, int num_sets, int associativity, int replacement_policy) {
     c->block_size = block_size;
     c->num_sets = num_sets;
-    if (block_size * num_sets == CACHE_SIZE) {
+    c->associativity = associativity;
+    c->replacement_policy = replacement_policy;
+    if (associativity == 1) {
+        // Direct-mapped cache
         c->num_blocks = num_sets;
     } else {
-        c->num_blocks = num_sets * (CACHE_SIZE / (block_size * num_sets));
+        // Set-associative cache
+        c->num_blocks = num_sets * associativity;
     }
     c->sets = (set*)malloc(sizeof(set) * num_sets);
     for (int i = 0; i < num_sets; i++) {
-        c->sets[i].blocks = (block*)malloc(sizeof(block) * (CACHE_SIZE / (block_size * num_sets)));
-        for (int j = 0; j < (CACHE_SIZE / (block_size * num_sets)); j++) {
+        c->sets[i].blocks = (block*)malloc(sizeof(block) * associativity);
+        for (int j = 0; j < associativity; j++) {
             c->sets[i].blocks[j].valid = 0;
             c->sets[i].blocks[j].tag = 0;
             c->sets[i].blocks[j].data = 0;
+            c->sets[i].blocks[j].lru = j;
         }
     }
 }
-
 
 void delete_cache(cache* c) {
     for (int i = 0; i < c->num_sets; i++) {
@@ -48,66 +56,162 @@ void delete_cache(cache* c) {
     free(c->sets);
 }
 
-void access_cache(cache* c, int address, int policy, int* hits, int* accesses) {
+void access_cache(cache* c, int address, int access_type, int* hits, int* accesses) {
     int set_index = (address / c->block_size) % c->num_sets;
     int tag = address / (c->block_size * c->num_sets);
     int hit = 0;
+    int replace_index;
 
     // Check for hit
-    for (int i = 0; i < (CACHE_SIZE / (c->block_size * c->num_sets)); i++) {
+    for (int i = 0; i < c->associativity; i++) {
         block* b = &(c->sets[set_index].blocks[i]);
         if (b->valid && b->tag == tag) {
             hit = 1;
             b->data = address;
+            if (c->replacement_policy == 1) {
+                // Update LRU for LRU replacement policy
+                b->lru = c->associativity - 1;
+                for (int j = 0; j < c->associativity; j++) {
+                    if (j != i && c->sets[set_index].blocks[j].valid) {
+                        c->sets[set_index].blocks[j].lru--;
+                    }
+                }
+            }
             break;
         }
     }
 
     // If miss, replace block
     if (!hit) {
-        int replace_index = policy == 0 ? 0 : rand() % (CACHE_SIZE / (c->block_size * c->num_sets));
-        block* b = &(c->sets[set_index].blocks[replace_index]);
-        b->valid = 1;
-        b->tag = tag;
-        b->data = address;
+        if (c->associativity == 1) {
+            // Direct-mapped cache
+            block* b = &(c->sets[set_index].blocks[0]);
+            if (b->valid) {
+                // Evict existing block
+                *accesses += 1;
+                if (access_type == 0) {
+                    *hits += 1;
+                }
+                b->tag = tag;
+                b->data = address;
+            } else {
+                // Add new block
+                b->valid = 1;
+                b->tag = tag;
+                b->data = address;
+            }
+        } else {
+            // Set-associative cache
+            replace_index = 0;
+            if (c->replacement_policy == 0) {
+                // Random replacement policy
+                replace_index = rand() % c->associativity;
+            } else if (c->replacement_policy == 1) {
+                // LRU replacement policy
+                int min_lru = c->associativity;
+                for (int i = 0; i < c->associativity; i++) {
+                    if (c->sets[set_index].blocks[i].lru < min_lru) {
+                        min_lru = c->sets[set_index].blocks[i].lru;
+                        replace_index = i;
+                    }
+                }
+            } else if (c->replacement_policy == 2) {
+                // FIFO replacement policy
+                int min_time = c->sets[set_index].blocks[0].data;
+                for (int i = 0; i < c->associativity; i++) {
+                    if (c->sets[set_index].blocks[i].data < min_time) {
+                        min_time = c->sets[set_index].blocks[i].data;
+                        replace_index = i;
+                    }
+                }
+            }
+            block* b = &(c->sets[set_index].blocks[replace_index]);
+            if (b->valid) {
+                // Evict existing block
+                *accesses += 1;
+                if (access_type == 0) {
+                    *hits += 1;
+                }
+                b->tag = tag;
+                b->data = address;
+                if (c->replacement_policy == 1) {
+                    // Update LRU for LRU replacement policy
+                    b->lru = c->associativity - 1;
+                  for (int j = 0; j < c->associativity; j++) {
+                    if (j != replace_index && c->sets[set_index].blocks[j].valid) {
+                        c->sets[set_index].blocks[j].lru--;
+                    }
+                }
+            }
+        } else {
+            // Add new block
+            b->valid = 1;
+            b->tag = tag;
+            b->data = address;
+            if (c->replacement_policy == 1) {
+                // Update LRU for LRU replacement policy
+                b->lru = c->associativity - 1;
+                for (int j = 0; j < c->associativity; j++) {
+                    if (j != replace_index && c->sets[set_index].blocks[j].valid) {
+                        c->sets[set_index].blocks[j].lru--;
+                    }
+                }
+            } else if (c->replacement_policy == 2) {
+                // Update FIFO for FIFO replacement policy
+                for (int j = 0; j < c->associativity; j++) {
+                    if (j != replace_index && c->sets[set_index].blocks[j].valid) {
+                        c->sets[set_index].blocks[j].data--;
+                    }
+                }
+            }
+        }
     }
-
-    // Update hit and access counters
     *accesses += 1;
-    if (hit) {
+    if (access_type == 1) {
         *hits += 1;
     }
+}
 }
 
 int main() {
     cache c;
-    int block_size, num_sets, access_address, access_type, hits = 0, accesses = 0;
+    int block_size = 4;
+    int num_sets = 8;
+    int associativity = 2;
+    int replacement_policy = 1; // LRU
+    int hits = 0;
+    int accesses = 0;
+    int address, access_type;
 
-    // Read input values from file
-    FILE* fp = fopen("traces.txt", "r");
-    if (fp == NULL) {
-        printf("Failed to open input file\n");
+    // Open input file
+    FILE *input_file;
+    input_file = fopen("traces.txt", "r");
+
+    if (input_file == NULL) {
+        printf("Error opening input file.\n");
         return 1;
     }
 
-    // Read cache configuration
-    fscanf(fp, "%d %d", &block_size, &num_sets);
-    init_cache(&c, block_size, num_sets);
+    // Initialize cache
+    init_cache(&c, block_size, num_sets, associativity, replacement_policy);
 
-    // Read memory access instructions
-    while (fscanf(fp, "%d %d", &access_type, &access_address) == 2) {
-        access_cache(&c, access_address, access_type, &hits, &accesses);
-
-        // Update hit/miss counters
-        if (access_type == 0) { // read
-            hits += 1;
-        }
+    // Read addresses from input file
+    while (fscanf(input_file, "%x %d", &address, &access_type) == 2) {
+        access_cache(&c, address, access_type, &hits, &accesses);
     }
 
-    // Print hit rate
-    printf("Hit rate: %f\n", (float)hits / accesses);
+    // Close input file
+    fclose(input_file);
 
-    // Free cache memory
+    // Print cache statistics
+    printf("Cache size: %d KB\n", (block_size * num_sets * associativity) / 1024);
+    printf("Number of sets: %d\n", num_sets);
+    printf("Associativity: %d\n", associativity);
+    printf("Replacement policy: %d\n", replacement_policy);
+    printf("Hits: %d\n", hits);
+    printf("Misses: %d\n", accesses - hits);
+
+    // Clean up cache
     delete_cache(&c);
 
     return 0;
