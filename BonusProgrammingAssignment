@@ -1,0 +1,114 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h> // Include the time.h header for the rand() function
+
+#define CACHE_SIZE 32
+
+typedef struct {
+    int valid;
+    int tag;
+    int data;
+} block;
+
+typedef struct {
+    block* blocks;
+} set;
+
+typedef struct {
+    int block_size;
+    int num_sets;
+    int num_blocks;
+    set* sets;
+} cache;
+
+void init_cache(cache* c, int block_size, int num_sets) {
+    c->block_size = block_size;
+    c->num_sets = num_sets;
+    if (block_size * num_sets == CACHE_SIZE) {
+        c->num_blocks = num_sets;
+    } else {
+        c->num_blocks = num_sets * (CACHE_SIZE / (block_size * num_sets));
+    }
+    c->sets = (set*)malloc(sizeof(set) * num_sets);
+    for (int i = 0; i < num_sets; i++) {
+        c->sets[i].blocks = (block*)malloc(sizeof(block) * (CACHE_SIZE / (block_size * num_sets)));
+        for (int j = 0; j < (CACHE_SIZE / (block_size * num_sets)); j++) {
+            c->sets[i].blocks[j].valid = 0;
+            c->sets[i].blocks[j].tag = 0;
+            c->sets[i].blocks[j].data = 0;
+        }
+    }
+}
+
+
+void delete_cache(cache* c) {
+    for (int i = 0; i < c->num_sets; i++) {
+        free(c->sets[i].blocks);
+    }
+    free(c->sets);
+}
+
+void access_cache(cache* c, int address, int policy, int* hits, int* accesses) {
+    int set_index = (address / c->block_size) % c->num_sets;
+    int tag = address / (c->block_size * c->num_sets);
+    int hit = 0;
+
+    // Check for hit
+    for (int i = 0; i < (CACHE_SIZE / (c->block_size * c->num_sets)); i++) {
+        block* b = &(c->sets[set_index].blocks[i]);
+        if (b->valid && b->tag == tag) {
+            hit = 1;
+            b->data = address;
+            break;
+        }
+    }
+
+    // If miss, replace block
+    if (!hit) {
+        int replace_index = policy == 0 ? 0 : rand() % (CACHE_SIZE / (c->block_size * c->num_sets));
+        block* b = &(c->sets[set_index].blocks[replace_index]);
+        b->valid = 1;
+        b->tag = tag;
+        b->data = address;
+    }
+
+    // Update hit and access counters
+    *accesses += 1;
+    if (hit) {
+        *hits += 1;
+    }
+}
+
+int main() {
+    cache c;
+    int block_size, num_sets, access_address, access_type, hits = 0, accesses = 0;
+
+    // Read input values from file
+    FILE* fp = fopen("traces.txt", "r");
+    if (fp == NULL) {
+        printf("Failed to open input file\n");
+        return 1;
+    }
+
+    // Read cache configuration
+    fscanf(fp, "%d %d", &block_size, &num_sets);
+    init_cache(&c, block_size, num_sets);
+
+    // Read memory access instructions
+    while (fscanf(fp, "%d %d", &access_type, &access_address) == 2) {
+        access_cache(&c, access_address, access_type, &hits, &accesses);
+
+        // Update hit/miss counters
+        if (access_type == 0) { // read
+            hits += 1;
+        }
+    }
+
+    // Print hit rate
+    printf("Hit rate: %f\n", (float)hits / accesses);
+
+    // Free cache memory
+    delete_cache(&c);
+
+    return 0;
+}
